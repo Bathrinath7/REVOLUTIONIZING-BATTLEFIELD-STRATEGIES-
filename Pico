@@ -1,0 +1,173 @@
+#include <Servo.h>
+#include <RCSwitch.h>
+
+// Pins
+#define TRIG_PIN 2
+#define ECHO_PIN 3
+#define LED_PIN 6
+#define PIR_PIN 4
+#define SERVO_PIN 13
+
+// Motor pins
+#define IN1 8
+#define IN2 9
+#define IN3 10
+#define IN4 11
+
+Servo myServo;
+RCSwitch mySwitch = RCSwitch();
+
+// Variables
+long duration;
+int distance;
+bool state = true;
+int speeds = 70;
+unsigned long turnStart = 0;
+bool turning = false;
+unsigned long stopStartTime = 0;
+bool stopping = false;
+
+unsigned long a = 123456; // RF key
+
+void stopMotors() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+}
+
+void moveForward() {
+  analogWrite(IN1, speeds);
+  analogWrite(IN2, 0);
+  analogWrite(IN3, 0);
+  analogWrite(IN4, speeds);
+}
+
+void turnLeft() {
+  Serial.println("Turning Left...");
+  turning = true;
+  turnStart = millis();
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, speeds);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, speeds);
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+
+  mySwitch.enableReceive(5); // RF receiver
+
+  // Ultrasonic
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  // Motors
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  // PIR & LED
+  pinMode(PIR_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+
+  // Servo
+  myServo.attach(SERVO_PIN);
+  myServo.write(0); // initial position
+
+  Serial.println("System Ready...");
+}
+
+void loop() {
+  // --- Ultrasonic distance measurement ---
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  duration = pulseIn(ECHO_PIN, HIGH, 30000); // timeout 30ms
+  distance = duration * 0.034 / 2; // cm
+
+  // --- Obstacle detected ---
+  if (distance < 14 && distance > 0) {
+    stopMotors();
+
+    if (!stopping) {
+      stopping = true;
+      stopStartTime = millis();
+      Serial.println("Obstacle detected: Stopped for 5 seconds...");
+    }
+
+    // Check PIR during 5 seconds
+    if (millis() - stopStartTime <= 5000) {
+      if (digitalRead(PIR_PIN) == HIGH) {
+        Serial.println("PIR HIGH Detected - Checking RF...");
+        unsigned long rfStart = millis();
+        bool rfMatched = false;
+        bool rfReceived = false;
+
+        // Wait 2 seconds for RF
+        while (millis() - rfStart < 2000) {
+          if (mySwitch.available()) {
+            unsigned long value = mySwitch.getReceivedValue();
+            rfReceived = true;
+            if (value == a) {
+              rfMatched = true;
+              break;
+            }
+            mySwitch.resetAvailable();
+          }
+        }
+
+        if (rfMatched) {
+          digitalWrite(LED_PIN, HIGH);
+          myServo.write(0);
+          Serial.println("RF Matched → LED ON, Servo 0°");
+        } else {
+          digitalWrite(LED_PIN, LOW);
+          myServo.write(90);
+          if (!rfReceived) {
+            Serial.println("No RF signal in 2s → LED OFF, Servo 90°");
+          } else {
+            Serial.println("RF Mismatch → LED OFF, Servo 90°");
+          }
+        }
+
+      } else {
+        // PIR LOW during 5s (still checking)
+        // Do nothing, keep waiting
+      }
+    }
+    else {
+      // 5 seconds completed
+      if (digitalRead(PIR_PIN) == LOW) {
+        Serial.println("No PIR for 5s → Turning Left...");
+        turnLeft();
+        myServo.write(0);
+        stopping = false;
+      } else {
+        stopping = false;
+      }
+    }
+  }
+  else if (distance >= 14) {
+    // Clear path: move forward
+    if (!turning) {
+      moveForward();
+      digitalWrite(LED_PIN, HIGH);
+      myServo.write(0);
+      stopping = false;
+    }
+  }
+
+  // Stop turning after 1 second
+  if (turning && millis() - turnStart >= 1000) {
+    turning = false;
+    stopMotors();
+    Serial.println("Turn complete → Stop motors");
+  }
+
+  delay(100);
+}
